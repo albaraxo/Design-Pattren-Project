@@ -40,6 +40,44 @@ final class GameOver implements EndGameState {
     @Override public String message() { return "GAME OVER 💀"; }
 }
 
+/* ===================== Player Shooting State Pattern ===================== */
+
+interface PlayerState {
+    List<Shot> shoot(Player player);
+}
+
+final class StablePlayerState implements PlayerState { // double shot
+    private static final StablePlayerState INSTANCE = new StablePlayerState();
+    private StablePlayerState() {}
+    public static StablePlayerState getInstance() { return INSTANCE; }
+
+    @Override
+    public List<Shot> shoot(Player player) {
+        Rectangle r = player.getBounds();
+        List<Shot> shots = new ArrayList<>();
+
+        // two shots slightly separated horizontally
+        shots.add(new Shot(r.x + r.width / 2 - 12, r.y - 18)); // left
+        shots.add(new Shot(r.x + r.width / 2 + 6,  r.y - 18)); // right
+
+        return shots;
+    }
+}
+
+final class MovingPlayerState implements PlayerState { // single shot
+    private static final MovingPlayerState INSTANCE = new MovingPlayerState();
+    private MovingPlayerState() {}
+    public static MovingPlayerState getInstance() { return INSTANCE; }
+
+    @Override
+    public List<Shot> shoot(Player player) {
+        Rectangle r = player.getBounds();
+        List<Shot> shots = new ArrayList<>();
+        shots.add(new Shot(r.x + r.width / 2 - 3, r.y - 18)); // center
+        return shots;
+    }
+}
+
 /* ===================== Player (Singleton) ===================== */
 
 final class Player implements Character {
@@ -51,6 +89,9 @@ final class Player implements Character {
     private boolean alive = true;
     private int cooldown = 0;
 
+    // State pattern: current shooting state
+    private PlayerState shootingState = StablePlayerState.getInstance();
+
     private Player() {}
 
     public static Player getInstance() { return INSTANCE; }
@@ -60,18 +101,24 @@ final class Player implements Character {
         this.y = y;
         alive = true;
         cooldown = 0;
+        shootingState = StablePlayerState.getInstance(); // start as stable
     }
 
     public void moveLeft()  { x -= speed; }
     public void moveRight() { x += speed; }
 
-    public Shot shoot() {
+    // called by facade/context when movement changes
+    public void setShootingState(PlayerState state) {
+        this.shootingState = state;
+    }
+
+    // now returns List<Shot> to allow double shot
+    public List<Shot> shoot() {
         if (cooldown == 0 && alive) {
             cooldown = 12;
-            Rectangle r = getBounds();
-            return new Shot(r.x + r.width / 2 - 3, r.y - 18);
+            return shootingState.shoot(this);
         }
-        return null;
+        return Collections.emptyList();
     }
 
     @Override public void update() {
@@ -259,6 +306,30 @@ final class Bomb implements Projectiles {
     public void deactivate() { active = false; }
 }
 
+/* ===================== Iterator Pattern ===================== */
+
+interface GameIterator<T> {
+    boolean hasNext();
+    T next();
+}
+
+final class ListGameIterator<T> implements GameIterator<T> {
+    private final List<T> list;
+    private int index = 0;
+
+    ListGameIterator(List<T> list) {
+        this.list = list;
+    }
+
+    @Override public boolean hasNext() {
+        return index < list.size();
+    }
+
+    @Override public T next() {
+        return list.get(index++);
+    }
+}
+
 /* ===================== Board (Singleton) ===================== */
 
 final class Board {
@@ -312,17 +383,48 @@ final class Board {
     public void addShot(Shot s) { if (s != null) shots.add(s); }
     public void addBomb(Bomb b) { if (b != null) bombs.add(b); }
 
+    // === Iterator factory methods ===
+    public GameIterator<BaseAlien> alienIterator() {
+        return new ListGameIterator<>(aliens);
+    }
+
+    public GameIterator<Shot> shotIterator() {
+        return new ListGameIterator<>(shots);
+    }
+
+    public GameIterator<Bomb> bombIterator() {
+        return new ListGameIterator<>(bombs);
+    }
+
     public void update() {
         if (endState != null) return;
 
         Player.getInstance().update();
-        aliens.forEach(BaseAlien::update);
-        shots.forEach(Shot::update);
-        bombs.forEach(Bomb::update);
 
-        for (Shot s : shots) {
+        GameIterator<BaseAlien> alienIt = alienIterator();
+        while (alienIt.hasNext()) {
+            alienIt.next().update();
+        }
+
+        GameIterator<Shot> shotItForUpdate = shotIterator();
+        while (shotItForUpdate.hasNext()) {
+            shotItForUpdate.next().update();
+        }
+
+        GameIterator<Bomb> bombItForUpdate = bombIterator();
+        while (bombItForUpdate.hasNext()) {
+            bombItForUpdate.next().update();
+        }
+
+        // Collision: shots vs aliens
+        GameIterator<Shot> shotIt = shotIterator();
+        while (shotIt.hasNext()) {
+            Shot s = shotIt.next();
             if (!s.isActive()) continue;
-            for (BaseAlien a : aliens) {
+
+            GameIterator<BaseAlien> alienIt2 = alienIterator();
+            while (alienIt2.hasNext()) {
+                BaseAlien a = alienIt2.next();
                 if (a.isAlive() && s.getBounds().intersects(a.getBounds())) {
                     a.kill();
                     s.deactivate();
@@ -331,8 +433,11 @@ final class Board {
             }
         }
 
+        // Collision: bombs vs player
         Rectangle pr = Player.getInstance().getBounds();
-        for (Bomb b : bombs) {
+        GameIterator<Bomb> bombIt = bombIterator();
+        while (bombIt.hasNext()) {
+            Bomb b = bombIt.next();
             if (b.isActive() && b.getBounds().intersects(pr)) {
                 b.deactivate();
                 Player.getInstance().kill();
@@ -355,9 +460,21 @@ final class Board {
 
         g.setColor(Color.WHITE);
         Player.getInstance().draw(g);
-        aliens.forEach(a -> a.draw(g));
-        shots.forEach(s -> s.draw(g));
-        bombs.forEach(b -> b.draw(g));
+
+        GameIterator<BaseAlien> alienIt = alienIterator();
+        while (alienIt.hasNext()) {
+            alienIt.next().draw(g);
+        }
+
+        GameIterator<Shot> shotIt = shotIterator();
+        while (shotIt.hasNext()) {
+            shotIt.next().draw(g);
+        }
+
+        GameIterator<Bomb> bombIt = bombIterator();
+        while (bombIt.hasNext()) {
+            bombIt.next().draw(g);
+        }
 
         if (endState != null) {
             g.setColor(Color.WHITE);
@@ -391,7 +508,10 @@ final class SpaceInvadersFacade {
     public void moveRight() { player.moveRight(); }
 
     public void playerShoot() {
-        board.addShot(player.shoot());
+        List<Shot> newShots = player.shoot();
+        for (Shot s : newShots) {
+            board.addShot(s);
+        }
     }
 
     public void updateGame() {
@@ -409,6 +529,15 @@ final class SpaceInvadersFacade {
     public void restartGame() {
         board.reset();
     }
+
+    // tie GamePanel movement to Player State
+    public void setPlayerMoving(boolean moving) {
+        if (moving) {
+            player.setShootingState(MovingPlayerState.getInstance());
+        } else {
+            player.setShootingState(StablePlayerState.getInstance());
+        }
+    }
 }
 
 /* ===================== GamePanel ===================== */
@@ -416,6 +545,10 @@ final class SpaceInvadersFacade {
 final class GamePanel extends JPanel implements ActionListener, KeyListener {
 
     private final SpaceInvadersFacade game = new SpaceInvadersFacade();
+
+    // track keys to know if player is moving or stable
+    private boolean leftPressed = false;
+    private boolean rightPressed = false;
 
     public GamePanel() {
         game.startGame();
@@ -433,17 +566,33 @@ final class GamePanel extends JPanel implements ActionListener, KeyListener {
         new javax.swing.Timer(16, this).start();
     }
 
-    @Override protected void paintComponent(Graphics g) {
+    @Override
+    protected void paintComponent(Graphics g) {
         super.paintComponent(g);
         game.drawGame((Graphics2D) g);
     }
 
-    @Override public void actionPerformed(ActionEvent e) {
+    @Override
+    public void actionPerformed(ActionEvent e) {
+        // 🔥 continuous movement here, every frame:
+        if (leftPressed) {
+            game.moveLeft();
+        }
+        if (rightPressed) {
+            game.moveRight();
+        }
+
         game.updateGame();
         repaint();
     }
 
-    @Override public void keyPressed(KeyEvent e) {
+    private void updateMovementState() {
+        boolean moving = leftPressed || rightPressed;
+        game.setPlayerMoving(moving);  // State pattern: stable vs moving shooting
+    }
+
+    @Override
+    public void keyPressed(KeyEvent e) {
 
         if (game.isGameOver()) {
             if (e.getKeyCode() == KeyEvent.VK_R)
@@ -451,20 +600,44 @@ final class GamePanel extends JPanel implements ActionListener, KeyListener {
             return;
         }
 
-        if (e.getKeyCode() == KeyEvent.VK_LEFT)  game.moveLeft();
-        if (e.getKeyCode() == KeyEvent.VK_RIGHT) game.moveRight();
-        if (e.getKeyCode() == KeyEvent.VK_SPACE) game.playerShoot();
+        if (e.getKeyCode() == KeyEvent.VK_LEFT) {
+            //  don't move here anymore, just set flag
+            leftPressed = true;
+            updateMovementState();
+        }
+
+        if (e.getKeyCode() == KeyEvent.VK_RIGHT) {
+            //  don't move here anymore, just set flag
+            rightPressed = true;
+            updateMovementState();
+        }
+
+        if (e.getKeyCode() == KeyEvent.VK_SPACE) {
+            game.playerShoot();  // shooting does NOT affect movement flags
+        }
     }
 
-    @Override public void keyReleased(KeyEvent e) {}
+    @Override
+    public void keyReleased(KeyEvent e) {
+        if (e.getKeyCode() == KeyEvent.VK_LEFT) {
+            leftPressed = false;
+            updateMovementState();
+        }
+        if (e.getKeyCode() == KeyEvent.VK_RIGHT) {
+            rightPressed = false;
+            updateMovementState();
+        }
+    }
+
     @Override public void keyTyped(KeyEvent e) {}
 }
 
+
 /* ===================== Main JFrame ===================== */
- class SpaceInvadersGame extends JFrame {
+class SpaceInvadersGame extends JFrame {
 
     public SpaceInvadersGame() {
-        setTitle("Space Invaders – Singleton + Factory + Flyweight + Facade");
+        setTitle("Space Invaders – Singleton + Factory + Flyweight + Facade + Iterator + State");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setResizable(false);
 
